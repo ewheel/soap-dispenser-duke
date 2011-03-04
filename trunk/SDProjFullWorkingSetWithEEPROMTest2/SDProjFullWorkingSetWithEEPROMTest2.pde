@@ -2,7 +2,8 @@
 #include <Wire.h>
 #include <avr/sleep.h>
 
-#define DEBUG 0
+#define DEBUG 1
+#define DEBUG2 1
 #define MSG_CRC_INIT 0xFFFF
 #define MSG_CCITT_CRC_POLY 0x1021
 #define M5E_STATUS1  3
@@ -13,16 +14,15 @@
 #define DISP_FILENAME "disp1.csv"
 #define dprint(...) do{if(DEBUG){Serial.print(__VA_ARGS__);}}while(0)
 #define dprintln(...) do{if(DEBUG){Serial.println(__VA_ARGS__);}}while(0)
+#define d2print(...) do{if(DEBUG2){Serial.print(__VA_ARGS__);}}while(0)
+#define d2println(...) do{if(DEBUG2){Serial.println(__VA_ARGS__);}}while(0)
 
 
 
 //Set constants.
 int readPwr = 3000;
-volatile int state = LOW;
 volatile int state2 = LOW;
-volatile int state3 = LOW;
 volatile int state4 = LOW;
-volatile byte isFailed = HIGH;
 volatile boolean foundTag = false;
 NewSoftSerial usb(6,7);        //Software serial object talks to the usb stick.
 NewSoftSerial rfid(4,5,false); //Software serial object talks to the RFID reader.
@@ -30,14 +30,7 @@ volatile int eventNum = 0;
 volatile unsigned int externalAddress = 0;
 
 ////*********************************************************************////
-//TODO: change storage of variables properly in individual arrays
-//for month,day,year,etc.
-//Add in the usb sleep routine in setup() and in sleepNow(). Wakeup seems to be taken care of in usb interrupt routine.
-//Remove the outputter strings situation.
-//Put in a method to write out the proper strings to the usb drive
-//in a separate method called within the interrupt for the usb write.
 
-//CURRENTLY WORKS BUT NEEDS SOME IMPROVEMENTS AS NOTED ABOVE.
 
 void setup()
 {
@@ -55,7 +48,7 @@ void setup()
   
   digitalWrite(12, HIGH);
   digitalWrite(11,LOW);  //TURN RFID ON.
-  digitalWrite(9,HIGH);  //TURN USB ON.
+  digitalWrite(9,LOW);  //TURN USB ON.
   digitalWrite(13,LOW);  //Turn LED OFF.
   attachInterrupt(0, stateTest, LOW);   //Set up interrupt for button press.
   attachInterrupt(1, diskInsert, LOW);   //Set up interrupt for button press.
@@ -80,14 +73,18 @@ void setup()
     // program the time & enable clock
    Wire.beginTransmission(0x68);
    Wire.send(0);
-   Wire.send(0x00);
-   Wire.send(0x04);
-   Wire.send(0x00 | 0x13);
+   Wire.send(0x00); //seconds = 0 and start oscillator
+   Wire.send(0x04); //minutes = 4
+   Wire.send(0x04); //hour = 4
+   Wire.send(0x02); //day of week = 2 : Monday
+   Wire.send(0x04); //day = the 4th
+   Wire.send(0x04); //month = 4 = April
+   Wire.send(0x11); //year = 2011
    Wire.endTransmission();
    delay(100);
    */
   delay(1000);
-  digitalWrite(9,LOW); //TURN USB OFF.
+  digitalWrite(9,HIGH); //TURN USB OFF.
 }
 
 void loop()
@@ -97,6 +94,7 @@ void loop()
   //If the button has been pressed, initiate communications.
   if(state2 == HIGH)
   {
+    //Get the RFID tag from the reader.
     byte rfidTag[12];
     retrieveRFIDInfo(rfidTag);
     Wire.beginTransmission(104);
@@ -138,6 +136,21 @@ void loop()
     dprintln(second);
     state2 = !state2;        //Change the state back to idle.
     
+    d2print(eventNum);
+    d2print(",");
+    d2print(day);
+    d2print("/");
+    d2print(month);
+    d2print("/");
+    d2print(year);
+    d2print(",");
+    d2print(hour);
+    d2print(":");
+    d2print(minute);
+    d2print(":");
+    d2println(second);
+    
+    //Write the data entry to persistent storage.
     writeEEPROM(disk1, externalAddress,month);
     writeEEPROM(disk1, externalAddress,day);
     writeEEPROM(disk1, externalAddress,year);
@@ -155,6 +168,8 @@ void loop()
 if(state4 == HIGH)
   {
     state4 = !state4;
+    dprintln(eventNum);
+    //eventNum = 400;  //Set number of things to print manually.
     resetVNC();
     usb.flush();
     delay(100);
@@ -162,37 +177,13 @@ if(state4 == HIGH)
     writeUSBNoParam("IPA");
     delay(5000);
     writeUSBParam("OPW ", DISP_FILENAME);
-//    writeUSBParam("OPW ", DISP_FILENAME);
-//    usb.print("WKD");
-//    usb.print(13,BYTE);
-//    usb.flush();
-//    delay(100);
-//    usb.print("IPA");
-//    usb.print(13,BYTE);
-//    usb.flush();
-//    delay(2000);
-//    digitalWrite(13, HIGH);
-//    delay(1000);
-//    digitalWrite(13,HIGH);
-//    usb.print("CLF ");
-//    usb.print(DISP_FILENAME);
-//    usb.print(13,BYTE);
-//    while (VNC1_Confirmation()==0);
-//    usb.flush();
-//    delay(2000);
-//    usb.flush();
-//    delay(1000);
-//    delay(20000);
-//    usb.print("OPW ");
-//    usb.print(DISP_FILENAME);
-//    usb.print(13,BYTE);
-//    while (VNC1_Confirmation()==0);
     dprintln("Opened File");
+    
     int addressCounter = 0;
       for(int i = 0; i < eventNum; i++)
       {
         int numChars = 1;
-        int x = eventNum;
+        int x = i;
         while (x>= 10)
         {                
           numChars++;                
@@ -200,16 +191,9 @@ if(state4 == HIGH)
         }
         char buf3[numChars];
         sprintf(buf3, "%0d", i);
+        dprint(numChars);
+        dprintln(buf3);
         writeDataToUSBDrive(numChars, buf3);
-//        usb.flush();
-//        delay(100);
-//        //Write the event number to disk.
-//        usb.print("WRF ");
-//        usb.print(numChars,DEC);
-//        usb.print(13,BYTE);
-//        usb.print(i);
-////        usb.print(13,BYTE);
-//        while (VNC1_Confirmation()==0);
         
         //Write the date to disk.
         numChars = 5;
@@ -222,13 +206,8 @@ if(state4 == HIGH)
         char buf[numChars];
         sprintf(buf, ",%0d/%0d/20%0d", month,day,year);
         writeDataToUSBDrive(numChars, buf);
-//        usb.flush();
-//        delay(100);
-//        usb.print("WRF ");
-//        usb.print(numChars,DEC);
-//        usb.print(13,BYTE);
-//        usb.print(buf);
-//        usb.print(13,BYTE);
+
+        //Write the time to disk.
         numChars = 4;
         byte hour = readEEPROM(disk1,addressCounter++);
         byte minute = readEEPROM(disk1, addressCounter++);
@@ -240,14 +219,8 @@ if(state4 == HIGH)
         sprintf(buf2, ",%0d:%0d:%0d,", hour,minute,second);
         writeDataToUSBDrive(numChars, buf2);
         delay(1000);
-//        usb.flush();
-//        delay(100);
-//        usb.print("WRF ");
-//        usb.print(numChars,DEC);
-//        usb.print(13,BYTE);
-//        usb.print(buf2);
-//        usb.print(44,BYTE);
-//        usb.print(13,BYTE);
+        
+        //Write the RFID tag to disk byte by byte (might try condensing this loop to save time.
         for(int j = 0; j < 12; j++)
         {
         numChars = 2;
@@ -273,15 +246,6 @@ if(state4 == HIGH)
         char buf4[numChars];
         sprintf(buf4, "%c%c", first,second);
         writeDataToUSBDrive(numChars, buf4);
-//        usb.flush();
-//        delay(100);
-//        usb.print("WRF ");
-//        usb.print(numChars);
-//        usb.print(13,BYTE);
-//        usb.print(first,BYTE);
-//        usb.print(second,BYTE);
-//        usb.print(13,BYTE);
-//        delay(100);
         }
         numChars = 1;
         writeDataToUSBDrive(numChars, "\n");
@@ -310,19 +274,11 @@ if(state4 == HIGH)
 //        delay(50);
         
       }
-//      while (VNC1_Confirmation()==0);
-//      delay(1000);
       dprintln("Done Writing");
       writeUSBParam("CLF ", DISP_FILENAME);
-//      usb.flush();
-//      delay(300);
-//      usb.print("CLF ");
-//      usb.print(DISP_FILENAME);
-//      usb.print(13,BYTE);
-//      while (VNC1_Confirmation()==0);
       dprintln("Closed File.");
       dprintln("DONE");
-    digitalWrite(9,LOW);
+    digitalWrite(9,HIGH);
 //    delay(1000);
   }
   digitalWrite(13,LOW);
@@ -365,16 +321,25 @@ void writeDataToUSBDrive(int length, char* toPrint)
   usb.print(length, DEC);
   usb.print(13,BYTE);
   usb.print(toPrint);
-  delay(300);
+  delay(350);
   digitalWrite(10,LOW);
-  while (VNC1_Confirmation()==0);
+  
+  unsigned long start = millis();
+  unsigned long endtime = start + 10000;
+  
+  while(endtime < start)
+  {
+    start = millis();
+    endtime = start + 10000;
+  }
+  while (VNC1_Confirmation()==0 && millis() < endtime && millis() > start);
 }
-//Set up state machine states on interrupt.
+
+//Set up state machine states on interrupt for soap dispenser lever.
 void stateTest()
 {
   detachInterrupt(0);
   detachInterrupt(1);
-  state3 = !state3;
   state2 = !state2;
 }
 
@@ -389,7 +354,7 @@ void diskInsert()
 //Hard reset for the VNC chip.
 void resetVNC()
 {
-  digitalWrite(9,HIGH);
+  digitalWrite(9,LOW);
   delay(6000);
   digitalWrite(12, LOW);
   delay(100);
@@ -401,8 +366,7 @@ byte VNC1_Confirmation(){
 
   byte state=0;
   byte byte_received;
-  byte confirm=0;  
-  //Serial.println("HI ALL");
+  byte confirm=0;
   unsigned long start = millis();
   unsigned long endtime = start + 10000;
   
@@ -415,7 +379,6 @@ byte VNC1_Confirmation(){
   while (usb.available()<5 && millis() < endtime && millis() > start) ;
 
   dprintln(".");
-//  delay(36);
   
   while (usb.available()){
     byte_received=usb.read();
@@ -434,8 +397,6 @@ byte VNC1_Confirmation(){
 //    }
     if(byte_received == 67)
     {
-      isFailed = HIGH;
-      //delay(1000);
       while(usb.available())
       {
         usb.read();
@@ -448,24 +409,19 @@ byte VNC1_Confirmation(){
     if (byte_received==68 && state==0){
       //Received "D"
       state=1;
-      //Serial.println ("Estado 1");
     }else if (byte_received==58 && state==1){
       //Received ":"  
       state=2;
-      //Serial.println ("Estado 2");
     }else if (byte_received==92 && state==2){
       //Received "\"  
       state=3;
-      //Serial.println ("Estado 3");
     }else if (byte_received==62 && state==3){
       //Received ">"
       state=4;
-      //Serial.println ("Estado 4");
     }else if (byte_received==13 && state==4){
       //Received "CR"
       state=0;
       confirm=1;
-      //Serial.println ("Estado 5");
       break;
     }else{
       confirm=0;
@@ -548,7 +504,7 @@ void retrieveRFIDInfo(byte* result)
 {
   int worked = 1;
   int trials = 0;
-  while((worked != 0) && trials < 6)
+  while((worked != 0) && trials < 20)
   {
     worked = RFIDSetup();
     trials++;
@@ -874,14 +830,17 @@ int QueryEnvironment(byte* result, unsigned int timeout)
       int rssi = buf[5 + 4 + i*19];
       //Print the tag id as a hex string
       dprint("TAGID: ");
+      d2print("TAGID: ");
       int k = 0;
       for (int j = 4 + i*19 + 5; j < 4 + i*19 + 5 + 12; j++) 
       {
         dprint(buf[j+5],HEX);
+        d2print(buf[j+5],HEX);
         result[k] = buf[j+5];
         k++;
       }
       dprintln();
+      d2println();
       break;
     }
     dprintln();
