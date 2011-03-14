@@ -40,15 +40,15 @@ void setup()
   pinMode(6,INPUT);                    //Software RX
   pinMode(7,OUTPUT);                   //Software TX
   pinMode(8,INPUT);  //RTS from VDrive2
-  pinMode(9,OUTPUT); //USB POWER
+  pinMode(10,OUTPUT); //USB POWER
   pinMode(2,INPUT);
   pinMode(3,INPUT);
   pinMode(11,OUTPUT); //RFID Power
-  pinMode(10,OUTPUT); //USB Test Pin
+  pinMode(9,OUTPUT); //USB Test Pin
   
   digitalWrite(12, HIGH);
-  digitalWrite(11,LOW);  //TURN RFID ON.
-  digitalWrite(9,LOW);  //TURN USB ON.
+  //digitalWrite(11,LOW);  //TURN RFID ON.
+  digitalWrite(10,LOW);  //TURN USB ON.
   digitalWrite(13,LOW);  //Turn LED OFF.
   attachInterrupt(0, stateTest, LOW);   //Set up interrupt for button press.
   attachInterrupt(1, diskInsert, LOW);   //Set up interrupt for button press.
@@ -84,7 +84,8 @@ void setup()
    delay(100);
    */
   delay(1000);
-  digitalWrite(9,HIGH); //TURN USB OFF.
+  digitalWrite(10,HIGH); //TURN USB OFF.
+  digitalWrite(11,HIGH); //TURN RFID OFF.
 }
 
 void loop()
@@ -94,9 +95,12 @@ void loop()
   //If the button has been pressed, initiate communications.
   if(state2 == HIGH)
   {
+    digitalWrite(11,LOW);
+    delay(2000);
     //Get the RFID tag from the reader.
     byte rfidTag[12];
     retrieveRFIDInfo(rfidTag);
+    digitalWrite(11,HIGH);
     Wire.beginTransmission(104);
     Wire.send(0x00);
     Wire.endTransmission();    //These 3 lines clear out the RTC to prep it for communication.
@@ -278,7 +282,7 @@ if(state4 == HIGH)
       writeUSBParam("CLF ", DISP_FILENAME);
       dprintln("Closed File.");
       dprintln("DONE");
-    digitalWrite(9,HIGH);
+    digitalWrite(10,HIGH);
 //    delay(1000);
   }
   digitalWrite(13,LOW);
@@ -291,11 +295,11 @@ void writeUSBNoParam(char* command)
 {
   usb.flush();
   delay(100);
-  digitalWrite(10,HIGH);
+  digitalWrite(9,HIGH);
   usb.print(command);
   usb.print(13,BYTE);
   delay(100);
-  digitalWrite(10,LOW);
+  digitalWrite(9,LOW);
   while (VNC1_Confirmation()==0);
 }
 
@@ -303,12 +307,12 @@ void writeUSBParam(char* command, char* parameter)
 {
   usb.flush();
   delay(100);
-  digitalWrite(10,HIGH);
+  digitalWrite(9,HIGH);
   usb.print(command);
   usb.print(parameter);
   usb.print(13,BYTE);
   delay(100);
-  digitalWrite(10,LOW);
+  digitalWrite(9,LOW);
   while (VNC1_Confirmation()==0);
 }
 
@@ -316,13 +320,13 @@ void writeDataToUSBDrive(int length, char* toPrint)
 {
   usb.flush();
   delay(100);
-  digitalWrite(10,HIGH);
+  digitalWrite(9,HIGH);
   usb.print("WRF ");
   usb.print(length, DEC);
   usb.print(13,BYTE);
   usb.print(toPrint);
   delay(350);
-  digitalWrite(10,LOW);
+  digitalWrite(9,LOW);
   
   unsigned long start = millis();
   unsigned long endtime = start + 10000;
@@ -354,7 +358,7 @@ void diskInsert()
 //Hard reset for the VNC chip.
 void resetVNC()
 {
-  digitalWrite(9,LOW);
+  digitalWrite(10,LOW);
   delay(6000);
   digitalWrite(12, LOW);
   delay(100);
@@ -509,10 +513,10 @@ void retrieveRFIDInfo(byte* result)
     worked = RFIDSetup();
     trials++;
   }
-  if(trials == 3)
-  {
-    return;
-  }
+//  if(trials == 3)
+//  {
+//    return;
+//  }
   delay(2000);
   
   unsigned long start = millis();
