@@ -74,11 +74,11 @@ void setup()
    Wire.beginTransmission(0x68);
    Wire.send(0);
    Wire.send(0x00); //seconds = 0 and start oscillator
-   Wire.send(0x04); //minutes = 4
-   Wire.send(0x04); //hour = 4
+   Wire.send(0x23); //minutes = 4
+   Wire.send(0x06); //hour = 4
    Wire.send(0x02); //day of week = 2 : Monday
-   Wire.send(0x04); //day = the 4th
-   Wire.send(0x04); //month = 4 = April
+   Wire.send(0x15); //day = the 4th
+   Wire.send(0x03); //month = 4 = April
    Wire.send(0x11); //year = 2011
    Wire.endTransmission();
    delay(100);
@@ -628,7 +628,6 @@ void sendMessage(byte command, byte* data, byte length)
     delayMicroseconds(10);
   }
   dprintln();
-  rfid.flush();
   delayMicroseconds(0);
 }
 
@@ -714,6 +713,7 @@ boolean bootFirmware()
   //Boot into Firmware
     dprint("\tBooting into firmware\n");
     sendMessage(0x04, NULL, 0);
+    delay(20);
     int n = readMessage(buf, 256, 0);
     if(checkSuccess(buf,n))
     {
@@ -734,6 +734,7 @@ boolean ChangeAntennaPorts(byte TXport, byte RXport)
   byte buf[256];
   byte data[2] = {TXport, RXport};
   sendMessage(0x91, data, 2);
+  delay(20);
   int n = readMessage(buf, 256, 0);
   return checkSuccess(buf, n);
 }
@@ -746,6 +747,7 @@ boolean ChangeTXReadPower(unsigned int r)
   byte lo = (readPwrF & 0x00FF);
   byte data[2] = {hi, lo};
   sendMessage(0x92, data, 2);
+  delay(20);
   int n = readMessage(buf, 256, 0);
   return checkSuccess(buf, n);
 }
