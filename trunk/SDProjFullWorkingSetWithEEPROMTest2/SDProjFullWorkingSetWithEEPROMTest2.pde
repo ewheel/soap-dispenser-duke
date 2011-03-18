@@ -1,15 +1,34 @@
 #include <NewSoftSerial.h>
 #include <Wire.h>
 #include <avr/sleep.h>
+#include <avr/interrupt.h>
 
-#define DEBUG 1
-#define DEBUG2 1
+#define DEBUG 0
+#define DEBUG2 0
+#define DIAGNOSTIC_STATE 1
 #define MSG_CRC_INIT 0xFFFF
 #define MSG_CCITT_CRC_POLY 0x1021
 #define M5E_STATUS1  3
 #define M5E_STATUS2  4
 #define M5E_LENGTH  1
 #define M5E_OPCODE  2
+#define RFID_POWER_PIN 11
+#define USB_POWER_PIN 10
+#define USB_RESET_PIN 12
+#define MONITOR_LED_PIN 13
+#define EEPROM_DATA_SEGMENT_START 64
+#define USB_RX_PIN 6
+#define USB_TX_PIN 7
+#define RFID_RX_PIN 4
+#define RFID_TX_PIN 5
+#define EEPROM_DEVICE_ADDRESS 104
+#define RTS_USB_DEVICE 8
+#define LEVER_INTERRUPT_PIN 2
+#define USB_INTERRUPT_PIN 3
+#define USB_TEST_PIN 9
+#define USB_CONFIRMATION_TIMEOUT 10000
+#define MAX_SETUP_TRIES 10
+
 #define disk1 0x50
 #define DISP_FILENAME "disp1.csv"
 #define dprint(...) do{if(DEBUG){Serial.print(__VA_ARGS__);}}while(0)
@@ -17,17 +36,14 @@
 #define d2print(...) do{if(DEBUG2){Serial.print(__VA_ARGS__);}}while(0)
 #define d2println(...) do{if(DEBUG2){Serial.println(__VA_ARGS__);}}while(0)
 
-
-
 //Set constants.
 int readPwr = 3000;
 volatile int state2 = LOW;
 volatile int state4 = LOW;
-volatile boolean foundTag = false;
-NewSoftSerial usb(6,7);        //Software serial object talks to the usb stick.
-NewSoftSerial rfid(4,5,false); //Software serial object talks to the RFID reader.
+NewSoftSerial usb(USB_RX_PIN,USB_TX_PIN);        //Software serial object talks to the usb stick.
+NewSoftSerial rfid(RFID_RX_PIN,RFID_TX_PIN,false); //Software serial object talks to the RFID reader.
 volatile int eventNum = 0;
-volatile unsigned int externalAddress = 0;
+volatile unsigned int externalAddress = EEPROM_DATA_SEGMENT_START;
 
 ////*********************************************************************////
 
@@ -35,27 +51,28 @@ volatile unsigned int externalAddress = 0;
 void setup()
 {
   Wire.begin();
-  pinMode(13, OUTPUT);                 //Allow LED out.
-  pinMode(12, OUTPUT);                 //VDrive Reset Pin.
-  pinMode(6,INPUT);                    //Software RX
-  pinMode(7,OUTPUT);                   //Software TX
-  pinMode(8,INPUT);  //RTS from VDrive2
-  pinMode(10,OUTPUT); //USB POWER
-  pinMode(2,INPUT);
-  pinMode(3,INPUT);
-  pinMode(11,OUTPUT); //RFID Power
-  pinMode(9,OUTPUT); //USB Test Pin
-  
-  digitalWrite(12, HIGH);
-  //digitalWrite(11,LOW);  //TURN RFID ON.
-  digitalWrite(10,LOW);  //TURN USB ON.
-  digitalWrite(13,LOW);  //Turn LED OFF.
-  attachInterrupt(0, stateTest, LOW);   //Set up interrupt for button press.
-  attachInterrupt(1, diskInsert, LOW);   //Set up interrupt for button press.
+  pinMode(MONITOR_LED_PIN, OUTPUT);                 //Allow LED out.
+  pinMode(USB_RESET_PIN, OUTPUT);                 //VDrive Reset Pin.
+//  pinMode(USB_RX_PIN,INPUT);                    //Software RX
+//  pinMode(USB_TX_PIN,OUTPUT);                   //Software TX
+//  pinMode(RTS_USB_DEVICE,INPUT);  //RTS from VDrive2
+  pinMode(USB_POWER_PIN,OUTPUT); //USB POWER
+  pinMode(LEVER_INTERRUPT_PIN,INPUT);
+  pinMode(USB_INTERRUPT_PIN,INPUT);
+  pinMode(RFID_POWER_PIN,OUTPUT); //RFID Power
+  pinMode(USB_TEST_PIN,OUTPUT); //USB Test Pin
+
+  digitalWrite(USB_RESET_PIN, HIGH);
+  digitalWrite(USB_POWER_PIN,LOW);  //TURN USB ON.
+  digitalWrite(MONITOR_LED_PIN,LOW);  //Turn LED OFF.
+
+//  attachInterrupt(0, stateTest, LOW);   //Set up interrupt for button press.
+//  attachInterrupt(1, diskInsert, LOW);   //Set up interrupt for button press.
+
   Serial.begin(9600);                  //Set up serial connection to computer.
   delay(2000);
   dprintln("Started");
- 
+
   usb.begin(9600);                     //Set up software serial to the USB stick.
   usb.flush();
   delay(2000);
@@ -68,45 +85,33 @@ void setup()
   delay(100);
   usb.print("IPA");
   usb.print(13,BYTE);
-  delay(100);
-  /*
-    // program the time & enable clock
-   Wire.beginTransmission(0x68);
-   Wire.send(0);
-   Wire.send(0x00); //seconds = 0 and start oscillator
-   Wire.send(0x23); //minutes = 4
-   Wire.send(0x06); //hour = 4
-   Wire.send(0x02); //day of week = 2 : Monday
-   Wire.send(0x15); //day = the 4th
-   Wire.send(0x03); //month = 4 = April
-   Wire.send(0x11); //year = 2011
-   Wire.endTransmission();
-   delay(100);
-   */
-  delay(1000);
-  digitalWrite(10,HIGH); //TURN USB OFF.
-  digitalWrite(11,HIGH); //TURN RFID OFF.
+  delay(2000);
+
+//  initializeRTC();
+  digitalWrite(USB_POWER_PIN,HIGH); //TURN USB OFF.
+  digitalWrite(RFID_POWER_PIN,HIGH); //TURN RFID OFF.
 }
 
 void loop()
 {
-  digitalWrite(13,HIGH);  //Toggle LED to opposite state for visual reference.
-  
+  digitalWrite(MONITOR_LED_PIN,HIGH);  //Toggle LED to opposite state for visual reference.
+
   //If the button has been pressed, initiate communications.
   if(state2 == HIGH)
   {
-    digitalWrite(11,LOW);
-    delay(2000);
+    digitalWrite(RFID_POWER_PIN,LOW);
+    delay(100);
     //Get the RFID tag from the reader.
     byte rfidTag[12];
     retrieveRFIDInfo(rfidTag);
-    digitalWrite(11,HIGH);
-    Wire.beginTransmission(104);
+    digitalWrite(RFID_POWER_PIN,HIGH);
+
+    Wire.beginTransmission(EEPROM_DEVICE_ADDRESS);
     Wire.send(0x00);
     Wire.endTransmission();    //These 3 lines clear out the RTC to prep it for communication.
 
     //Obtain all the time information from the DS1307 chip.
-    Wire.requestFrom(104,7);
+    Wire.requestFrom(EEPROM_DEVICE_ADDRESS,7);
     int second = Wire.receive() & 0x7f;
     int minute = Wire.receive();      
     int hour = Wire.receive() & 0x3f;    
@@ -139,7 +144,7 @@ void loop()
     dprint("second: ");  
     dprintln(second);
     state2 = !state2;        //Change the state back to idle.
-    
+
     d2print(eventNum);
     d2print(",");
     d2print(day);
@@ -153,27 +158,28 @@ void loop()
     d2print(minute);
     d2print(":");
     d2println(second);
-    
+
     //Write the data entry to persistent storage.
-    writeEEPROM(disk1, externalAddress,month);
-    writeEEPROM(disk1, externalAddress,day);
-    writeEEPROM(disk1, externalAddress,year);
-    writeEEPROM(disk1, externalAddress,hour);
-    writeEEPROM(disk1, externalAddress,minute);
-    writeEEPROM(disk1, externalAddress,second);
+    writeEEPROM(disk1, externalAddress++,month);
+    writeEEPROM(disk1, externalAddress++,day);
+    writeEEPROM(disk1, externalAddress++,year);
+    writeEEPROM(disk1, externalAddress++,hour);
+    writeEEPROM(disk1, externalAddress++,minute);
+    writeEEPROM(disk1, externalAddress++,second);
     for(int i = 0; i < 12; i++)
     {
-      writeEEPROM(disk1, externalAddress, rfidTag[i]);
+      writeEEPROM(disk1, externalAddress++, rfidTag[i]);
     }
     eventNum++;
-}
+    //    writeEEPROM(disk1, 0, eventNum);
+  }
 
-//Interrupt handling for the usb drive interrupt button.
-if(state4 == HIGH)
+  //Interrupt handling for the usb drive interrupt button.
+  if(state4 == HIGH)
   {
     state4 = !state4;
     dprintln(eventNum);
-    //eventNum = 400;  //Set number of things to print manually.
+    eventNum = 2000;  //Set number of things to print manually.
     resetVNC();
     usb.flush();
     delay(100);
@@ -182,51 +188,50 @@ if(state4 == HIGH)
     delay(5000);
     writeUSBParam("OPW ", DISP_FILENAME);
     dprintln("Opened File");
-    
-    int addressCounter = 0;
-      for(int i = 0; i < eventNum; i++)
-      {
-        int numChars = 1;
-        int x = i;
-        while (x>= 10)
-        {                
-          numChars++;                
-          x/=10;    
-        }
-        char buf3[numChars];
-        sprintf(buf3, "%0d", i);
-        dprint(numChars);
-        dprintln(buf3);
-        writeDataToUSBDrive(numChars, buf3);
-        
-        //Write the date to disk.
-        numChars = 5;
-        byte month = readEEPROM(disk1,addressCounter++);
-        byte day = readEEPROM(disk1, addressCounter++);
-        byte year = readEEPROM(disk1,addressCounter++);
-        numChars += addBytes(month);
-        numChars += addBytes(day);
-        numChars += addBytes(year);
-        char buf[numChars];
-        sprintf(buf, ",%0d/%0d/20%0d", month,day,year);
-        writeDataToUSBDrive(numChars, buf);
 
-        //Write the time to disk.
-        numChars = 4;
-        byte hour = readEEPROM(disk1,addressCounter++);
-        byte minute = readEEPROM(disk1, addressCounter++);
-        byte second = readEEPROM(disk1,addressCounter++);
-        numChars += addBytes(hour);
-        numChars += addBytes(minute);
-        numChars += addBytes(second);
-        char buf2[numChars];
-        sprintf(buf2, ",%0d:%0d:%0d,", hour,minute,second);
-        writeDataToUSBDrive(numChars, buf2);
-        delay(1000);
-        
-        //Write the RFID tag to disk byte by byte (might try condensing this loop to save time.
-        for(int j = 0; j < 12; j++)
-        {
+    int addressCounter = EEPROM_DATA_SEGMENT_START;
+    for(int i = 0; i < eventNum; i++)
+    {
+      int numChars = 1;
+      int x = i;
+      while (x>= 10)
+      {                
+        numChars++;                
+        x/=10;    
+      }
+      char buf3[numChars];
+      sprintf(buf3, "%0d", i);
+      dprint(numChars);
+      dprintln(buf3);
+      writeDataToUSBDrive(numChars, buf3);
+
+      //Write the date to disk.
+      numChars = 5;
+      byte month = readEEPROM(disk1,addressCounter++);
+      byte day = readEEPROM(disk1, addressCounter++);
+      byte year = readEEPROM(disk1,addressCounter++);
+      numChars += addBytes(month);
+      numChars += addBytes(day);
+      numChars += addBytes(year);
+      char buf[numChars];
+      sprintf(buf, ",%0d/%0d/20%0d", month,day,year);
+      writeDataToUSBDrive(numChars, buf);
+
+      //Write the time to disk.
+      numChars = 4;
+      byte hour = readEEPROM(disk1,addressCounter++);
+      byte minute = readEEPROM(disk1, addressCounter++);
+      byte second = readEEPROM(disk1,addressCounter++);
+      numChars += addBytes(hour);
+      numChars += addBytes(minute);
+      numChars += addBytes(second);
+      char buf2[numChars];
+      sprintf(buf2, ",%0d:%0d:%0d,", hour,minute,second);
+      writeDataToUSBDrive(numChars, buf2);
+
+      //Write the RFID tag to disk byte by byte (might try condensing this loop to save time.
+      for(int j = 0; j < 12; j++)
+      {
         numChars = 2;
         byte tagID = readEEPROM(disk1,addressCounter++);
         byte first;
@@ -250,91 +255,105 @@ if(state4 == HIGH)
         char buf4[numChars];
         sprintf(buf4, "%c%c", first,second);
         writeDataToUSBDrive(numChars, buf4);
-        }
-        numChars = 1;
-        writeDataToUSBDrive(numChars, "\n");
-//        usb.flush();
-//        delay(100);
-//        usb.print("WRF 1");
-//        usb.print(13,BYTE);
-//        usb.print(13,BYTE);
-//        usb.print(13,BYTE);
-        
-//        numChars = 25;
-//        usb.print("WRF ");
-//        usb.print(numChars,DEC);
-//        usb.print(13,BYTE);
-//        usb.print(44,BYTE);
-////        Serial.println(externalAddress);
-//        for(int j = 0; j < 12; j++)
-//        {
-//          byte tagByte = readEEPROM(disk1,addressCounter++);
-//          usb.print(tagByte>>4,BYTE);
-//          usb.print(tagByte & 0x0F, BYTE);
-//          delay(10);
-//        }
-//        usb.print(13,BYTE);
-//        usb.print(13,BYTE);
-//        delay(50);
-        
       }
-      dprintln("Done Writing");
-      writeUSBParam("CLF ", DISP_FILENAME);
-      dprintln("Closed File.");
-      dprintln("DONE");
-    digitalWrite(10,HIGH);
-//    delay(1000);
+      numChars = 1;
+      writeDataToUSBDrive(numChars, "\n");
+    }
+    dprintln("Done Writing");
+    writeUSBParam("CLF ", DISP_FILENAME);
+    dprintln("Closed File.");
+    dprintln("DONE");
+    digitalWrite(USB_POWER_PIN,HIGH);
   }
-  digitalWrite(13,LOW);
-  attachInterrupt(0, stateTest, LOW);
-  attachInterrupt(1, diskInsert, LOW);
+  digitalWrite(MONITOR_LED_PIN,LOW);
+//  attachInterrupt(0, stateTest, LOW);
+//  attachInterrupt(1, diskInsert, LOW);
   sleepNow();
+}
+
+void verifyWrite()
+{
+  unsigned long start2 = millis();
+  unsigned long endtime2 = start2 + USB_CONFIRMATION_TIMEOUT;
+
+  while(endtime2 < start2)
+  {
+    start2 = millis();
+    endtime2 = start2 + USB_CONFIRMATION_TIMEOUT;
+  }
+  byte z = 0;
+  delay(10);
+  unsigned long comparison = millis();
+  while ((comparison < endtime2) && (comparison > start2))
+  {
+    z = VNC1_Confirmation();
+    if(z)
+    {
+      break;
+    }
+    comparison = millis();
+  }
+  if(z)
+  {
+    return;
+  }
+  else
+  {
+    dprintln("Failed");
+    digitalWrite(USB_POWER_PIN,HIGH);
+    digitalWrite(MONITOR_LED_PIN,LOW);
+//    attachInterrupt(0, stateTest, LOW);
+//    attachInterrupt(1, diskInsert, LOW);
+    sleepNow();
+  }
 }
 
 void writeUSBNoParam(char* command)
 {
   usb.flush();
   delay(100);
-  digitalWrite(9,HIGH);
+  digitalWrite(USB_TEST_PIN,HIGH);
   usb.print(command);
   usb.print(13,BYTE);
   delay(100);
-  digitalWrite(9,LOW);
-  while (VNC1_Confirmation()==0);
+  digitalWrite(USB_TEST_PIN,LOW);
+  verifyWrite();
+  //  while (VNC1_Confirmation()==0);
 }
 
 void writeUSBParam(char* command, char* parameter)
 {
   usb.flush();
   delay(100);
-  digitalWrite(9,HIGH);
+  digitalWrite(USB_TEST_PIN,HIGH);
   usb.print(command);
   usb.print(parameter);
   usb.print(13,BYTE);
   delay(100);
-  digitalWrite(9,LOW);
-  while (VNC1_Confirmation()==0);
+  digitalWrite(USB_TEST_PIN,LOW);
+  verifyWrite();
+  //  while (VNC1_Confirmation()==0);
 }
 
 void writeDataToUSBDrive(int length, char* toPrint)
 {
   usb.flush();
   delay(100);
-  digitalWrite(9,HIGH);
+  digitalWrite(USB_TEST_PIN,HIGH);
   usb.print("WRF ");
   usb.print(length, DEC);
   usb.print(13,BYTE);
   usb.print(toPrint);
   delay(350);
-  digitalWrite(9,LOW);
-  
+  digitalWrite(USB_TEST_PIN,LOW);
+  //  verifyWrite();
   unsigned long start = millis();
-  unsigned long endtime = start + 10000;
-  
+  unsigned long endtime = start + USB_CONFIRMATION_TIMEOUT;
+
   while(endtime < start)
   {
     start = millis();
-    endtime = start + 10000;
+    endtime = start + USB_CONFIRMATION_TIMEOUT;
   }
   while (VNC1_Confirmation()==0 && millis() < endtime && millis() > start);
 }
@@ -342,27 +361,27 @@ void writeDataToUSBDrive(int length, char* toPrint)
 //Set up state machine states on interrupt for soap dispenser lever.
 void stateTest()
 {
-  detachInterrupt(0);
-  detachInterrupt(1);
+//  detachInterrupt(0);
+//  detachInterrupt(1);
   state2 = !state2;
 }
 
 //Set up state machine states on interrupt for usb.
 void diskInsert()
 {
-  detachInterrupt(0);
-  detachInterrupt(1);
+//  detachInterrupt(0);
+//  detachInterrupt(1);
   state4 = !state4;
 }
 
 //Hard reset for the VNC chip.
 void resetVNC()
 {
-  digitalWrite(10,LOW);
+  digitalWrite(USB_POWER_PIN,LOW);
   delay(6000);
-  digitalWrite(12, LOW);
+  digitalWrite(USB_RESET_PIN, LOW);
   delay(100);
-  digitalWrite(12,HIGH);
+  digitalWrite(USB_RESET_PIN,HIGH);
 }
 
 //Discover if VNC is responding or not.
@@ -372,33 +391,21 @@ byte VNC1_Confirmation(){
   byte byte_received;
   byte confirm=0;
   unsigned long start = millis();
-  unsigned long endtime = start + 10000;
-  
+  unsigned long endtime = start + USB_CONFIRMATION_TIMEOUT;
+
   while(endtime < start)
   {
     start = millis();
-    endtime = start + 10000;
+    endtime = start + USB_CONFIRMATION_TIMEOUT;
   }
-  
+
   while (usb.available()<5 && millis() < endtime && millis() > start) ;
 
   dprintln(".");
-  
+
   while (usb.available()){
     byte_received=usb.read();
-//    int p1 = millis();
     dprint(byte_received);
-//    delayMicroseconds(300);
-//    int p2 = millis();
-//    Serial.print(p2-p1);
-//    delayMicroseconds(5);
-//    if(byte_received == 78 || byte_received == 118)
-//    {
-//      attachInterrupt(0, stateTest, LOW);
-//      attachInterrupt(1, diskInsert, LOW);
-//      digitalWrite(9,LOW);
-//      sleepNow();
-//    }
     if(byte_received == 67)
     {
       while(usb.available())
@@ -409,25 +416,30 @@ byte VNC1_Confirmation(){
       delay(100);
       return 0;
     }
-    
+
     if (byte_received==68 && state==0){
       //Received "D"
       state=1;
-    }else if (byte_received==58 && state==1){
+    }
+    else if (byte_received==58 && state==1){
       //Received ":"  
       state=2;
-    }else if (byte_received==92 && state==2){
+    }
+    else if (byte_received==92 && state==2){
       //Received "\"  
       state=3;
-    }else if (byte_received==62 && state==3){
+    }
+    else if (byte_received==62 && state==3){
       //Received ">"
       state=4;
-    }else if (byte_received==13 && state==4){
+    }
+    else if (byte_received==13 && state==4){
       //Received "CR"
       state=0;
       confirm=1;
       break;
-    }else{
+    }
+    else{
       confirm=0;
       break;
     }
@@ -454,130 +466,153 @@ int addBytes(int num)
 //Put system to sleep.
 void sleepNow()         // here we put the arduino to sleep
 {
-    /* Now is the time to set the sleep mode. In the Atmega8 datasheet
-     * http://www.atmel.com/dyn/resources/prod_documents/doc2486.pdf on page 35
-     * there is a list of sleep modes which explains which clocks and 
-     * wake up sources are available in which sleep mode.
-     *
-     * In the avr/sleep.h file, the call names of these sleep modes are to be found:
-     *
-     * The 5 different modes are:
-     *     SLEEP_MODE_IDLE         -the least power savings 
-     *     SLEEP_MODE_ADC
-     *     SLEEP_MODE_PWR_SAVE
-     *     SLEEP_MODE_STANDBY
-     *     SLEEP_MODE_PWR_DOWN     -the most power savings
-     *
-     * For now, we want as much power savings as possible, so we 
-     * choose the according 
-     * sleep mode: SLEEP_MODE_PWR_DOWN
-     * 
-     */  
-    set_sleep_mode(SLEEP_MODE_PWR_DOWN);   // sleep mode is set here
+  /* Now is the time to set the sleep mode. In the Atmega8 datasheet
+   * http://www.atmel.com/dyn/resources/prod_documents/doc2486.pdf on page 35
+   * there is a list of sleep modes which explains which clocks and 
+   * wake up sources are available in which sleep mode.
+   *
+   * In the avr/sleep.h file, the call names of these sleep modes are to be found:
+   *
+   * The 5 different modes are:
+   *     SLEEP_MODE_IDLE         -the least power savings 
+   *     SLEEP_MODE_ADC
+   *     SLEEP_MODE_PWR_SAVE
+   *     SLEEP_MODE_STANDBY
+   *     SLEEP_MODE_PWR_DOWN     -the most power savings
+   *
+   * For now, we want as much power savings as possible, so we 
+   * choose the according 
+   * sleep mode: SLEEP_MODE_PWR_DOWN
+   * 
+   */
+  set_sleep_mode(SLEEP_MODE_PWR_DOWN);   // sleep mode is set here
+ 
+  sleep_enable();          // enables the sleep bit in the mcucr register
+  // so sleep is possible. just a safety pin 
 
-    sleep_enable();          // enables the sleep bit in the mcucr register
-                             // so sleep is possible. just a safety pin 
-
-    /* Now it is time to enable an interrupt. We do it here so an 
-     * accidentally pushed interrupt button doesn't interrupt 
-     * our running program. if you want to be able to run 
-     * interrupt code besides the sleep function, place it in 
-     * setup() for example.
-     * 
-     * In the function call attachInterrupt(A, B, C)
-     * A   can be either 0 or 1 for interrupts on pin 2 or 3.   
-     * 
-     * B   Name of a function you want to execute at interrupt for A.
-     *
-     * C   Trigger mode of the interrupt pin. can be:
-     *             LOW        a low level triggers
-     *             CHANGE     a change in level triggers
-     *             RISING     a rising edge of a level triggers
-     *             FALLING    a falling edge of a level triggers
-     *
-     * In all but the IDLE sleep modes only LOW can be used.
-     */
-    sleep_mode();            // here the device is actually put to sleep!!
-                             // THE PROGRAM CONTINUES FROM HERE AFTER WAKING UP
-
-    sleep_disable();         // first thing after waking from sleep:
-                             // disable sleep...
+  /* Now it is time to enable an interrupt. We do it here so an 
+   * accidentally pushed interrupt button doesn't interrupt 
+   * our running program. if you want to be able to run 
+   * interrupt code besides the sleep function, place it in 
+   * setup() for example.
+   * 
+   * In the function call attachInterrupt(A, B, C)
+   * A   can be either 0 or 1 for interrupts on pin 2 or 3.   
+   * 
+   * B   Name of a function you want to execute at interrupt for A.
+   *
+   * C   Trigger mode of the interrupt pin. can be:
+   *             LOW        a low level triggers
+   *             CHANGE     a change in level triggers
+   *             RISING     a rising edge of a level triggers
+   *             FALLING    a falling edge of a level triggers
+   *
+   * In all but the IDLE sleep modes only LOW can be used.
+   */
+  digitalWrite(USB_RESET_PIN,LOW);
+//  digitalWrite(USB_RX_PIN,LOW);
+//  digitalWrite(USB_TX_PIN,LOW);
+  digitalWrite(RFID_RX_PIN,LOW);
+  digitalWrite(RFID_TX_PIN,LOW);
+  attachInterrupt(0, stateTest, LOW);
+  attachInterrupt(1, diskInsert, LOW);
+  sleep_mode();            // here the device is actually put to sleep!!
+  // THE PROGRAM CONTINUES FROM HERE AFTER WAKING UP
+  sleep_disable();         // first thing after waking from sleep:
+  // disable sleep...
+  detachInterrupt(0);
+  detachInterrupt(1);
+  digitalWrite(USB_RESET_PIN,HIGH);
 }
 
 void retrieveRFIDInfo(byte* result)
 {
   int worked = 1;
   int trials = 0;
-  while((worked != 0) && trials < 20)
+  while((worked != 0) && trials < MAX_SETUP_TRIES)
   {
     worked = RFIDSetup();
     trials++;
   }
-//  if(trials == 3)
-//  {
-//    return;
-//  }
-  delay(2000);
-  
-  unsigned long start = millis();
-  unsigned long endtime = start + 10000;
-  
-  while(endtime < start)
+  if(trials == MAX_SETUP_TRIES - 1)
   {
-    start = millis();
-    endtime = start + 10000;
+    return;
   }
   dprintln("Querying!");
   rfid.flush();
   delayMicroseconds(400);
-  while(!foundTag && ((millis() < endtime) && (millis() > start)))
- {
-   if(QueryEnvironment(result, 50))
-   {
-     foundTag = false;
-     return;
-   }
-   else
-   {
-     for(int i = 0; i<12;i++)
-     {
-       result[i] = i+65;
-     }
-   }
-   delay(100);
- } 
-  foundTag = false;
+  unsigned long start = millis();
+  unsigned long endtime = start + USB_CONFIRMATION_TIMEOUT;
+
+  while(endtime < start)
+  {
+    start = millis();
+    endtime = start + USB_CONFIRMATION_TIMEOUT;
+  }
+//  Serial.println("*");
+  delay(1);
+  unsigned long comparison = millis();
+  while(((comparison < endtime) && (comparison > start)))
+  {
+    if(QueryEnvironment(result, 50))
+    {
+//      Serial.println("+");
+      if(DIAGNOSTIC_STATE)
+      {
+        indicateCorrectRead();
+      }
+      return;
+    }
+    comparison = millis();
+    delay(100);
+  } 
+  for(int i = 0; i<12;i++)
+  {
+    result[i] = i+65;
+  }
+}
+
+void indicateCorrectRead()
+{
+//  Serial.println(".");
+  digitalWrite(MONITOR_LED_PIN, LOW);
+  delay(100);
+  digitalWrite(MONITOR_LED_PIN,HIGH);
+  delay(100);
+  digitalWrite(MONITOR_LED_PIN,LOW);
+  delay(100);
+  digitalWrite(MONITOR_LED_PIN,HIGH);
 }
 
 //This function updates a running CRC value
 void CRC_calcCrc8(unsigned int* crc_calc, byte ch) 
 {
-	byte i, v, xor_flag;
-	
-	//Align test bit with leftmost bit of the MsgObj byte
-	v = 0x80;
-	for (int i = 0; i < 8; i++) 
-        {
-	  if (*crc_calc & 0x8000)
-          {
-            xor_flag = 1;
-          }
-	  else
-          {
-            xor_flag = 0;
-          }
-	  *crc_calc = *crc_calc << 1;
-	  if (ch & v)
-          {
-            *crc_calc = *crc_calc + 1;
-          }
-	  if (xor_flag)
-          {
-            *crc_calc = *crc_calc ^ MSG_CCITT_CRC_POLY;
-          }
-          //Align test bit with next bit of the MsgObj byte.  
-	  v = v >> 1;
-	}
+  byte i, v, xor_flag;
+
+  //Align test bit with leftmost bit of the MsgObj byte
+  v = 0x80;
+  for (int i = 0; i < 8; i++) 
+  {
+    if (*crc_calc & 0x8000)
+    {
+      xor_flag = 1;
+    }
+    else
+    {
+      xor_flag = 0;
+    }
+    *crc_calc = *crc_calc << 1;
+    if (ch & v)
+    {
+      *crc_calc = *crc_calc + 1;
+    }
+    if (xor_flag)
+    {
+      *crc_calc = *crc_calc ^ MSG_CCITT_CRC_POLY;
+    }
+    //Align test bit with next bit of the MsgObj byte.  
+    v = v >> 1;
+  }
 }
 
 
@@ -663,7 +698,7 @@ int readMessage(byte* data, int length, int timeout)
 
   while(rfid.available() || ((millis() < endtime) && (millis() > start)))
   {
-    
+
     int k = rfid.read();
     if(k == 0xFF && n == 1)
     {
@@ -674,7 +709,7 @@ int readMessage(byte* data, int length, int timeout)
       data[n] = k;
       n += 1;
     }
-    
+
   }
   //validateCRC(data, n);
   dprintln(n);
@@ -711,22 +746,22 @@ boolean bootFirmware()
 {
   byte buf[256];
   //Boot into Firmware
-    dprint("\tBooting into firmware\n");
-    sendMessage(0x04, NULL, 0);
-    delay(20);
-    int n = readMessage(buf, 256, 0);
-    if(checkSuccess(buf,n))
-    {
-      return true;
-    }
-    // Non-Zero Response will be received if the reader has already booted into firmware
-    //   This occurs when you've already powered-up & previously configured the reader.  
-    //   Can safely ignore this problem and continue initialization
-    if (((((buf[3] << 8) & 0xFF00) | (0x00FF & buf[4])) == 0x0101)) //This actually means "invalid opcode"
-    {
-      return true;
-    }
-    return false;
+  dprint("\tBooting into firmware\n");
+  sendMessage(0x04, NULL, 0);
+  delay(20);
+  int n = readMessage(buf, 256, 0);
+  if(checkSuccess(buf,n))
+  {
+    return true;
+  }
+  // Non-Zero Response will be received if the reader has already booted into firmware
+  //   This occurs when you've already powered-up & previously configured the reader.  
+  //   Can safely ignore this problem and continue initialization
+  if (((((buf[3] << 8) & 0xFF00) | (0x00FF & buf[4])) == 0x0101)) //This actually means "invalid opcode"
+  {
+    return true;
+  }
+  return false;
 }
 
 boolean ChangeAntennaPorts(byte TXport, byte RXport) 
@@ -738,7 +773,7 @@ boolean ChangeAntennaPorts(byte TXport, byte RXport)
   int n = readMessage(buf, 256, 0);
   return checkSuccess(buf, n);
 }
-        
+
 boolean ChangeTXReadPower(unsigned int r) 
 {
   byte buf[256];
@@ -850,7 +885,6 @@ int QueryEnvironment(byte* result, unsigned int timeout)
       break;
     }
     dprintln();
-    foundTag = true;
     break;
   }
   //Reset and clear the Tag ID Buffer for next Read Tag ID Multiple
@@ -877,26 +911,16 @@ int RFIDSetup()
   delay(1000);
   if (!checkBootFirmwareVersion())  
   {
-    rfid.begin(9600);
-    rfid.flush();
-    delay(1000);
-    if (!checkBootFirmwareVersion()) 
-    {
-      dprintln("\tFailed @ 9600 bps");
-      dprintln("\tCould not open serial port at baudrate 230400 bps or 9600 bps");
-      rfid.end();
-      return 1;
-    }
-    else 
-    {
-      dprintln("\tSuccessful @ 9600 bps\n");
-    }
+    dprintln("\tFailed @ 9600 bps");
+    dprintln("\tCould not open serial port at baudrate 230400 bps or 9600 bps");
+    rfid.end();
+    return 1;
   }
   else 
   {
     dprintln("\tSuccessful @ 9600 bps\n");
   }
-	
+
   //Now boot into firmware
   dprintln("Trying to boot firmware.");
   if (!bootFirmware()) 
@@ -904,28 +928,28 @@ int RFIDSetup()
     dprintln("Failed to boot firmware");
     return 1;
   }
-  
+
   dprintln("Changing antenna ports.");
   if (!ChangeAntennaPorts(1, 1)) 
   {
     dprintln("Failed to change antenna ports");
     return 1;
   }
-	
+
   dprintln("Changing read power.");
   if (!ChangeTXReadPower(readPwr)) 
   {
     dprintln("Failed to change read power");
     return 1;
   }
-  	
+
   dprintln("Changing protocol.");
   if (!setProtocol()) 
   {
     dprintln("Failed to set protocol to GEN2");
     return 1;
   }
-	
+
   dprintln("Setting region.");
   if (!setRegion()) 
   {
@@ -933,14 +957,14 @@ int RFIDSetup()
     return 1;
   }
 
-	// Set Power Mode (we'll just use default of "full power mode").
-        // Use remaining defaults
+  // Set Power Mode (we'll just use default of "full power mode").
+  // Use remaining defaults
 
-	// Start the device thread; spawns a new thread and executes
-	// RFIDdriver::Main(), which contains the main loop for the driver.
-	//StartThread();
+  // Start the device thread; spawns a new thread and executes
+  // RFIDdriver::Main(), which contains the main loop for the driver.
+  //StartThread();
 
-	return 0;
+  return 0;
 }
 void writeEEPROM(int deviceaddress, unsigned int eeaddress, byte data ) 
 {
@@ -950,7 +974,6 @@ void writeEEPROM(int deviceaddress, unsigned int eeaddress, byte data )
   Wire.send(data);
   Wire.endTransmission();
   delay(5);
-  externalAddress++;
 }
 
 byte readEEPROM(int deviceaddress, unsigned int eeaddress ) 
@@ -964,3 +987,31 @@ byte readEEPROM(int deviceaddress, unsigned int eeaddress )
   if (Wire.available()) rdata = Wire.receive();
   return rdata;
 }
+
+void initializeRTC()
+{
+  // program the time & enable clock
+  Wire.beginTransmission(0x68);
+  Wire.send(0);
+  Wire.send(0x00); //seconds = 0 and start oscillator
+  Wire.send(0x26); //minutes = 4
+  Wire.send(0x04); //hour = 4
+  Wire.send(0x06); //day of week = 2 : Monday
+  Wire.send(0x18); //day = the 4th
+  Wire.send(0x03); //month = 4 = April
+  Wire.send(0x11); //year = 2011
+  Wire.endTransmission();
+  delay(100);
+}
+
+
+
+
+
+
+
+
+
+
+
+
