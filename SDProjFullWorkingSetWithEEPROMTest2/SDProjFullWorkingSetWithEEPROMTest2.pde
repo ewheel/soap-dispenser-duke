@@ -179,7 +179,7 @@ void loop()
   {
     state4 = !state4;
     dprintln(eventNum);
-//    eventNum = 2000;  //Set number of things to print manually.
+    eventNum = 100;  //Set number of things to print manually.
     resetVNC();
     usb.flush();
     delay(100);
@@ -230,34 +230,17 @@ void loop()
       writeDataToUSBDrive(numChars, buf2);
 
       //Write the RFID tag to disk byte by byte (might try condensing this loop to save time.
+      char buf5[26];
+      numChars = 25;
       for(int j = 0; j < 12; j++)
       {
-        numChars = 2;
         byte tagID = readEEPROM(disk1,addressCounter++);
-        byte first;
-        byte second;
-        if(tagID>>4 > 9)
-        {
-          first = 55 + (tagID>>4);
-        }
-        else
-        {
-          first = 48 + (tagID>>4);
-        }
-        if((tagID & 0x0F) > 9)
-        {
-          second = 55 + (tagID & 0x0F);
-        }
-        else
-        {
-          second = 48 + (tagID & 0x0F);
-        }
-        char buf4[numChars];
-        sprintf(buf4, "%c%c", first,second);
-        writeDataToUSBDrive(numChars, buf4);
+        buf5[2*j] = getFirstByte(tagID);
+        buf5[(2*j)+1] = getSecondByte(tagID);
       }
-      numChars = 1;
-      writeDataToUSBDrive(numChars, "\n");
+      buf5[24] = 13;
+      buf5[25] = 0;
+      writeDataToUSBDrive(numChars, buf5);
     }
     dprintln("Done Writing");
     writeUSBParam("CLF ", DISP_FILENAME);
@@ -269,6 +252,35 @@ void loop()
 //  attachInterrupt(0, stateTest, LOW);
 //  attachInterrupt(1, diskInsert, LOW);
   sleepNow();
+}
+
+
+byte getFirstByte(byte inByte)
+{
+  byte first;
+  if(inByte>>4 > 9)
+  {
+    first = 55 + (inByte>>4);
+  }
+  else
+  {
+    first = 48 + (inByte>>4);
+  }
+  return first;
+}
+
+byte getSecondByte(byte inByte)
+{
+  byte second;
+  if((inByte & 0x0F) > 9)
+  {
+    second = 55 + (inByte & 0x0F);
+  }
+  else
+  {
+    second = 48 + (inByte & 0x0F);
+  }
+  return second;
 }
 
 void verifyWrite()
@@ -338,13 +350,13 @@ void writeUSBParam(char* command, char* parameter)
 void writeDataToUSBDrive(int length, char* toPrint)
 {
   usb.flush();
-  delay(100);
+//  delay(100);
   digitalWrite(USB_TEST_PIN,HIGH);
   usb.print("WRF ");
   usb.print(length, DEC);
   usb.print(13,BYTE);
   usb.print(toPrint);
-  delay(350);
+  delay(25);
   digitalWrite(USB_TEST_PIN,LOW);
   //  verifyWrite();
   unsigned long start = millis();
