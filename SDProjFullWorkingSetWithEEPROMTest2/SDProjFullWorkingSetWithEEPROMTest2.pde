@@ -179,7 +179,7 @@ void loop()
   {
     state4 = !state4;
     dprintln(eventNum);
-    eventNum = 100;  //Set number of things to print manually.
+//    eventNum = 100;  //Set number of things to print manually.
     resetVNC();
     usb.flush();
     delay(100);
